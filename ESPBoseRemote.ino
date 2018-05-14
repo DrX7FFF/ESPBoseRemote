@@ -7,6 +7,7 @@
 
 #define DEBUG_PORT 9977
 #define DISP_PORT 9978
+#define HOSTNAME "BOSEMON"
 
 WiFiServer dispServer(DISP_PORT);
 WiFiClient dispClient;
@@ -15,6 +16,7 @@ WiFiServer debugServer(DEBUG_PORT);
 WiFiClient debugClient;
 
 void setup() {
+  WiFi.hostname(HOSTNAME);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWD);
   while (WiFi.status() != WL_CONNECTED) {
@@ -51,7 +53,10 @@ uint8_t seqIndex = 0;
 //Bose State
 uint8_t boseOnError = 0;
 uint8_t bosePower = 0;
+uint8_t boseOff=0;
 uint8_t boseVol = 0;
+uint8_t boseMute = 0;
+uint8_t boseSource = 0;
 uint8_t boseKeyEvent = 0;
 
 uint8_t ctrlVolume = 0;
@@ -63,74 +68,81 @@ const uint8_t cmdEnableKeyEvent[]   = {0x07, 0x00, 0x01, 0x1b, 0x01, 0x0d, 0x11}
 const uint8_t cmdGetKeyEvent[]      = {0x07, 0x00, 0x01, 0x1b, 0x00, 0x00, 0x1d};
 const uint8_t cmdGetPower[]         = {0x07, 0x00, 0x01, 0x1d, 0x00, 0x00, 0x1b};
 const uint8_t cmdGetVolume[]        = {0x07, 0x00, 0x01, 0x15, 0x00, 0x1e, 0x0d};
+const uint8_t cmdGetRmState[]       = {0x08, 0x00, 0x01, 0x11, 0x00, 0x02, 0x00, 0x1A};
+const uint8_t cmdGetSource[]        = {0x08, 0x00, 0x01, 0x0A, 0x00, 0x18, 0x18, 0x03};
+
 
 void loop() {
   ArduinoOTA.handle();
-  delay(10);
 
   if(!debugClient.connected()) { // if client not connected
     debugClient = debugServer.available(); // wait for it to connect
     if (debugClient.connected()){
-      debugPrintln("Debug connected");
+      debugClient.println("Debug connected");
       if (dispClient.connected())
-        debugPrintln("Client connected");
+        debugClient.println("Client connected");
     }
   }
+
+  // TESTER la déconnexion et reconnexion WIFI
 
   if(!dispClient.connected()) { // if client not connected
     dispClient= dispServer.available(); // wait for it to connect
     if (dispClient.connected()){
       dispClient.println(bosePower == 0?"Bose Off":"Bose On");
-      debugPrintln("Client connected");
+      if (debugClient.connected())
+        debugClient.println("Client connected");
     }
   }
 
-  // Mettre en place un flush du serial si erreur
-
-  // TEMP DEBUG
-//  if (!debugClient.connected())
-//    return;
-    
+  // A FAIRE
+  // logger les timeouts consécutif et mettre en erreur
   // Séquence de suveillance du Bose
   if (waitACK){
-    debugClient.print("#");
     waitACK--;
+    // si waitACK == 0 alors TimeOut donc on libère
+    if (waitACK == 0){
+      Serial.flush();
+      while(Serial.available () > 0)
+        Serial.read();
+    }
   }
   else{
     if (ctrlVolumeAct){
       if (ctrlVolumeAct==CTRLVOL_COUNT)
-        sendToBose(cmdGetVolume,7);
+        sendToBose(cmdGetVolume,sizeof(cmdGetVolume));
       if (ctrlVolume)
         ctrlVolumeAct--;
       else
         ctrlVolumeAct=0;
       seqCnt = SEQ_COUNT;
     }
-    
     if (seqCnt)
       seqCnt--;
     else
       switch (seqIndex){
         case 0:
             seqIndex++;
+            // Vie pour le display en début de control
+            dispClient.print(".");
             if (!boseKeyEvent){
-              sendToBose(cmdEnableKeyEvent,7);
+              sendToBose(cmdEnableKeyEvent,sizeof(cmdEnableKeyEvent));
               break;
             }
         case 1:
           seqIndex++;
-          sendToBose(cmdGetKeyEvent,7);
+          sendToBose(cmdGetKeyEvent,sizeof(cmdGetKeyEvent));
           break;
         case 2:
-          seqIndex++;
-          sendToBose(cmdGetPower,7);
+          seqIndex++;          
+          sendToBose(cmdGetRmState,sizeof(cmdGetRmState));
+//          sendToBose(cmdGetPower,sizeof(cmdGetPower));
           break;
         case 3:
           seqIndex++;
-          sendToBose(cmdGetVolume,7);
+          sendToBose(cmdGetVolume,sizeof(cmdGetVolume));
           break;
         case 4:
-          dispClient.print(".");
           seqCnt = SEQ_COUNT;
         default:
           seqIndex=0;
@@ -138,24 +150,29 @@ void loop() {
   }
 
   // IP to Serial
-  if(debugClient.available()) {
+  if(debugClient.connected()) {
     while(debugClient.available()) {
       buf1[i1] = (uint8_t)debugClient.read();
       if(i1<1023) i1++;
     }
-    sendToBose(buf1,i1);
-    i1 = 0;
+    if (i1>0){
+      sendToBose(buf1,i1);
+      i1 = 0;
+    }
   }
 
   // Serial to IP
   receiveFromBose();
 
+  // traitement sur retour de touche
   if (ctrlVolume && ctrlVolumeAct == 0)
     ctrlVolumeAct = CTRLVOL_COUNT;
 
+  delay(10);
 }
 
-void sendToBose(const uint8_t* msg, const uint8_t len){
+void sendToBose(const uint8_t* msg, uint8_t len){
+  // interdiction de l'envoi si attente d'un ACK
   if (waitACK)
     return;
 
@@ -170,7 +187,8 @@ void sendToBose(const uint8_t* msg, const uint8_t len){
   waitACK = ACK_COUNT;
 }
 
-#define MAXPACKETSIZE 100
+// 20 caractètes sont suffisant par rapport au 255 théorique
+#define MAXPACKETSIZE 20
 uint8_t buf[MAXPACKETSIZE];
 
 void receiveFromBose(){
@@ -194,10 +212,8 @@ void receiveFromBose(){
   }
   
   if ((readlen+1) != len) {
-    debugPrint("Longueur attendu ");
-    debugPrintHex(len);
-    debugPrint("recu ");
-    debugPrintlnHex(readlen+1);
+    if(debugClient.connected())
+      debugClient.println("Erreur de longueur");
     boseOnError = 1;
     return; //Pas reçu toute la longeur Exit
   }
@@ -208,7 +224,8 @@ void decodResponse(){
   uint16_t opcode = buf[1]<<8 | buf[2];
   // Cas d'erreur
   if (buf[0] & 0x80){
-    debugPrint("Bose return ERROR");
+    if(debugClient.connected())
+      debugClient.println("Bose return ERROR");
     boseOnError = 1;
     return;
   }
@@ -223,6 +240,37 @@ void decodResponse(){
     switch (opcode){
       case 0x0100:         // Ack
         waitACK = 0;
+        break;
+      case 0x010A:      // Retour source
+        if (boseSource != buf[3]){
+          boseSource = buf[3];
+          dispClient.print("Source :");
+          switch (boseSource){
+            case 0x0E:
+              dispClient.println("TV");
+              break;
+            case 0x11:
+              dispClient.println("Menu");
+              break;
+          }
+        }
+      case 0x0111:      // Retour Room State
+        if (boseMute != buf[4]){
+          boseMute = buf[4];
+          dispClient.print("Volume :");
+          if (boseMute)
+            dispClient.println("Mute");
+          else
+            dispClient.println(boseVol);          
+        }
+        if (boseOff != buf[5]){
+          boseOff = buf[5];
+          dispClient.print("Bose :");
+          if (boseOff)
+            dispClient.println("Off");
+          else
+            dispClient.println("On");          
+        }        
         break;
       case 0x0115:      // Retour de Volume
         if (boseVol != buf[3]){
@@ -245,12 +293,11 @@ void decodResponse(){
 }
 
 void decodKey(uint8_t keyCode, uint8_t keyState){
-  debugPrint("Touche ");
-  debugPrintHex(keyCode);
-  if (keyState)
-    debugPrintln("relachée");
-  else
-    debugPrintln("enfoncée");
+  if(debugClient.connected()){
+    debugClient.print("Touche ");
+    debugPrintHex(keyCode);
+    debugClient.println(keyState?"relachee":"enfoncee");
+  }
   switch (keyCode){
     case 0x01: //mute
       break;
@@ -265,23 +312,6 @@ void decodKey(uint8_t keyCode, uint8_t keyState){
       break;
   }
 }
-
-void debugPrintln(char* m){
-    if(debugClient.connected())
-      debugClient.println(m);
-}
-
-void debugPrint(char* m){
-    if(debugClient.connected())
-      debugClient.print(m);
-}
-
-void debugPrintlnHex(char c){
-  if (c<0x10)
-    debugClient.print("0");    
-  debugClient.println(c, HEX);
-}
-
 void debugPrintHex(char c){
   if (c<0x10)
     debugClient.print("0");    
