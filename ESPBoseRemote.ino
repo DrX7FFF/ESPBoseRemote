@@ -69,17 +69,18 @@ uint8_t boseKeyEvent = 0;
 uint8_t initMode = 1;
 uint8_t ctrlVolume = 0;
 //uint8_t ctrlVolumeAct = 0;
-uint8_t ctrlPower = 0;
+uint8_t ctrlRoomState = 0;
 uint8_t ctrlSource = 0;
-uint8_t ctrlPowerOff = 0;
-#define WAITPOWEROFF_INIT 0xF0
+uint8_t ctrlRoomStateScan = 0;
+#define SCAN_INIT 0xF0
 uint8_t ctrlVolumePress = 0;
+uint8_t ctrlSourceScan = 0;
 
 const uint8_t cmdEnableKeyEvent[]   = {0x07, 0x00, 0x01, 0x1b, 0x01, 0x0d, 0x11};
 const uint8_t cmdGetKeyEvent[]      = {0x07, 0x00, 0x01, 0x1b, 0x00, 0x00, 0x1d};
 //const uint8_t cmdGetPower[]         = {0x07, 0x00, 0x01, 0x1d, 0x00, 0x00, 0x1b};
 const uint8_t cmdGetVolume[]        = {0x07, 0x00, 0x01, 0x15, 0x00, 0x1e, 0x0d};
-const uint8_t cmdGetRmState[]       = {0x08, 0x00, 0x01, 0x11, 0x00, 0x02, 0x00, 0x1A};
+const uint8_t cmdGetRoomState[]       = {0x08, 0x00, 0x01, 0x11, 0x00, 0x02, 0x00, 0x1A};
 const uint8_t cmdGetSource[]        = {0x08, 0x00, 0x01, 0x0A, 0x00, 0x18, 0x18, 0x03};
 
 
@@ -135,7 +136,7 @@ void loop() {
       boseKeyEvent = 0;
       boseOnError = 0;
       ctrlVolume = 1;
-      ctrlPower = 1;
+      ctrlRoomState = 1;
       ctrlSource = 1;
       sendToBose(cmdGetKeyEvent,sizeof(cmdGetKeyEvent));
     }
@@ -144,23 +145,31 @@ void loop() {
       initMode = 1;
       sendToBose(cmdEnableKeyEvent,sizeof(cmdEnableKeyEvent));
     }
-    else if (ctrlPower){
-      debugClient.println("Ctrl Power");
-      ctrlPower = 0;
-      sendToBose(cmdGetRmState,sizeof(cmdGetRmState));      
+    else if (ctrlRoomState){
+      debugClient.println("Ctrl RoomState");
+      ctrlRoomState = 0;
+      sendToBose(cmdGetRoomState,sizeof(cmdGetRoomState));      
     }
-    else if (ctrlPowerOff){
-      ctrlPowerOff--;
-      if ((ctrlPowerOff & 0x0F) == 0x01){
-        debugClient.print("Ctrl Power Off ");
-        debugPrintHex(ctrlPowerOff);
-        sendToBose(cmdGetRmState,sizeof(cmdGetRmState));
+    else if (ctrlRoomStateScan){
+      if ((ctrlRoomStateScan & 0x0F) == 0x01){
+        debugPrintHex(ctrlRoomStateScan);
+        debugClient.print(" Ctrl RoomState Scan");
+        sendToBose(cmdGetRoomState,sizeof(cmdGetRoomState));
       }
+      ctrlRoomStateScan--;
     }
     else if (ctrlSource){
       debugClient.println("Ctrl Source");
       ctrlSource = 0;
-      sendToBose(cmdGetSource,sizeof(cmdGetSource));      
+      sendToBose(cmdGetSource,sizeof(cmdGetSource));
+    }
+    else if (ctrlSourceScan){
+//      if ((ctrlSourceScan & 0x0F) == 0x01){
+        debugPrintHex(ctrlSourceScan);
+        debugClient.println(" Ctrl Source Scan");
+        sendToBose(cmdGetSource,sizeof(cmdGetSource));
+//      }
+      ctrlSourceScan--;
     }
     else if (ctrlVolume){
       debugClient.println("Ctrl Volume");
@@ -203,6 +212,14 @@ void loop() {
 }
 
 void sendToDisplay(){  
+//  uint8_t state = 0;
+//  if (boseOnError!=0 || boseKeyEvent==0)
+//    state = 2;
+//  else if (boseOff)
+//    state = 0;
+//  else
+//    state = 1;
+
   dispClient.print("Err:");
   dispClient.print(boseOnError?"On ":"Off");
   
@@ -311,40 +328,39 @@ void decodResponse(){
         waitACK = 0;
         break;
       case 0x010A:      // Retour source
-        if (boseSource != buf[5]){ // Test du 5 plutot que le 3
-          boseSource = buf[5];
-          dispClient.print("[Src] ");
+        if (boseSource != buf[3]){
+          ctrlSourceScan = 0;
+          boseSource = buf[3];
           sendToDisplayToDo = 1;
         }
         break;
       case 0x0111:      // Retour Room State
         if (boseOff != buf[5]){
           boseOff = buf[5];
-          dispClient.print("[Pwr] ");
           sendToDisplayToDo = 1;
-          if (boseOff == 0) // Si devient actif alors controler la source
-            ctrlSource = 1;
-          else{
-            if (ctrlPowerOff) //si devient inactif alors arrête surveillance arrêt
-              ctrlPowerOff = 0;          
+          if (boseOff){ // Si devient actif alors controler la source
+            if (ctrlRoomStateScan) //si devient inactif alors arrête surveillance arrêt
+              ctrlRoomStateScan = 0;
           }
+          else
+            ctrlSourceScan = SCAN_INIT;
         }
         if (boseMute != buf[4]){
           boseMute = buf[4];
-          dispClient.print("[Mut] ");
           sendToDisplayToDo = 1;
         }
         break;
       case 0x0115:      // Retour de Volume
         if (boseVol != buf[3]){
           boseVol = buf[3];
-          dispClient.print("[Vol] ");
           sendToDisplayToDo = 1;
         }
         break;
       case 0x011b:    // Retour de etat KeyPresseEvent
-        if (boseKeyEvent != buf[3])
+        if (boseKeyEvent != buf[3]){
           boseKeyEvent = buf[3];
+          sendToDisplayToDo = 1;
+        }
         break;
       // case 0x011d:       // Retour System Ready
         // if (bosePower != buf[3]){
@@ -367,7 +383,7 @@ void decodKey(uint8_t keyCode, uint8_t keyState){
   switch (keyCode){
     case 0x01: //mute
       if (keyState !=0) // si relaché vérifier room state
-        ctrlPower = 1;
+        ctrlRoomState = 1;
       break;
     case 0x02: //Vol-
     case 0x03: //Vol+
@@ -383,14 +399,14 @@ void decodKey(uint8_t keyCode, uint8_t keyState){
     case 0x30: //Exit : dans le cas ou on quitte le menu
     case 0xD3: //Source
       if (keyState !=0) // si relaché vérifier room state
-        ctrlSource = 1;
+        ctrlSourceScan = SCAN_INIT;
       break;
     case 0x4C: //Power
       if (keyState !=0){ // si relaché vérifier room state
         if (boseOff)
-          ctrlPower = 1;
+          ctrlRoomState = 1;
         else   
-          ctrlPowerOff = WAITPOWEROFF_INIT;
+          ctrlRoomStateScan = SCAN_INIT;
       }
       break;
   }
