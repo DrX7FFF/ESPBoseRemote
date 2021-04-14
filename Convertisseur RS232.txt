@@ -1,5 +1,0 @@
-
-
-
-TXbose	RXhigh	14	DOUT1		DIN1		11	TXlow	RXesp	
-RXbose	TXhigh	13	RIN1			ROUT1	12	RXlow	TXesp	
