@@ -1,3 +1,6 @@
+It's a personal use. 
+Not much information on Bose serial port, so don't hesitate to ask me, I can help you.
+
 # ESPBoseRemote
 Remote Control for Bose AV20
 
